@@ -15,8 +15,12 @@ package health
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/dapr/kit/logger"
@@ -26,71 +30,119 @@ import (
 type Server interface {
 	Run(context.Context, int) error
 	Ready()
-	NotReady()
 }
 
 type server struct {
-	ready bool
-	log   logger.Logger
+	ready        atomic.Bool
+	targetsReady atomic.Int64
+	targets      int64
+	router       http.Handler
+	log          logger.Logger
+}
+
+type Options struct {
+	RouterOptions []RouterOptions
+	Targets       *int
+	Log           logger.Logger
+}
+
+type RouterOptions func(log logger.Logger) (string, http.Handler)
+
+func NewRouterOptions(path string, handler http.Handler) RouterOptions {
+	return func(log logger.Logger) (string, http.Handler) {
+		return path, handler
+	}
+}
+
+func NewJSONDataRouterOptions[T any](path string, getter func() (T, error)) RouterOptions {
+	return func(log logger.Logger) (string, http.Handler) {
+		return path, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			data, err := getter()
+			if err != nil {
+				writer.WriteHeader(http.StatusInternalServerError)
+				writer.Write([]byte(err.Error()))
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			err = json.NewEncoder(writer).Encode(data)
+			if err != nil {
+				log.Warnf("failed to encode json to response writer: %s", err.Error())
+				writer.WriteHeader(http.StatusInternalServerError)
+				writer.Write([]byte(err.Error()))
+				return
+			}
+		})
+	}
 }
 
 // NewServer returns a new healthz server.
-func NewServer(log logger.Logger) Server {
-	return &server{
-		log: log,
+func NewServer(opts Options) Server {
+	targets := 1
+	if opts.Targets != nil {
+		targets = *opts.Targets
 	}
+
+	s := &server{
+		log:     opts.Log,
+		targets: int64(targets),
+	}
+
+	router := http.NewServeMux()
+	router.Handle("/healthz", s.healthz())
+	// add public handlers to the router
+	for _, option := range opts.RouterOptions {
+		path, handler := option(s.log)
+		router.Handle(path, handler)
+	}
+	s.router = router
+	return s
 }
 
 // Ready sets a ready state for the endpoint handlers.
 func (s *server) Ready() {
-	s.ready = true
-}
-
-// NotReady sets a not ready state for the endpoint handlers.
-func (s *server) NotReady() {
-	s.ready = false
+	s.targetsReady.Add(1)
+	if s.targetsReady.Load() >= s.targets {
+		s.ready.Store(true)
+	}
 }
 
 // Run starts a net/http server with a healthz endpoint.
 func (s *server) Run(ctx context.Context, port int) error {
-	router := http.NewServeMux()
-	router.Handle("/healthz", s.healthz())
-
+	//nolint:gosec
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: router,
+		Addr:        fmt.Sprintf(":%d", port),
+		Handler:     s.router,
+		BaseContext: func(_ net.Listener) context.Context { return ctx },
 	}
 
-	doneCh := make(chan struct{})
-
+	serveErr := make(chan error, 1)
 	go func() {
-		select {
-		case <-ctx.Done():
-			s.log.Info("Healthz server is shutting down")
-			shutdownCtx, cancel := context.WithTimeout(
-				context.Background(),
-				time.Second*5,
-			)
-			defer cancel()
-			srv.Shutdown(shutdownCtx) // nolint: errcheck
-		case <-doneCh:
+		s.log.Infof("Healthz server is listening on %s", srv.Addr)
+		err := srv.ListenAndServe()
+		if !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
 		}
+		serveErr <- nil
 	}()
 
-	s.log.Infof("Healthz server is listening on %s", srv.Addr)
-	err := srv.ListenAndServe()
-	if err != http.ErrServerClosed {
-		s.log.Errorf("Healthz server error: %s", err)
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+		// nop
 	}
-	close(doneCh)
-	return err
+	s.log.Info("Healthz server is shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	return errors.Join(srv.Shutdown(shutdownCtx), <-serveErr)
 }
 
 // healthz is a health endpoint handler.
 func (s *server) healthz() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var status int
-		if s.ready {
+		if s.ready.Load() {
 			status = http.StatusOK
 		} else {
 			status = http.StatusServiceUnavailable

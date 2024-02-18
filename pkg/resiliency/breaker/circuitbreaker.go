@@ -15,6 +15,7 @@ package breaker
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/sony/gobreaker"
@@ -51,10 +52,24 @@ type CircuitBreaker struct {
 	breaker *gobreaker.CircuitBreaker
 }
 
+var (
+	ErrOpenState       = gobreaker.ErrOpenState
+	ErrTooManyRequests = gobreaker.ErrTooManyRequests
+)
+
+type CircuitBreakerState string
+
+const (
+	StateClosed   CircuitBreakerState = "closed"
+	StateOpen     CircuitBreakerState = "open"
+	StateHalfOpen CircuitBreakerState = "half-open"
+	StateUnknown  CircuitBreakerState = "unknown"
+)
+
 // IsErrorPermanent returns true if `err` should be treated as a
 // permanent error that cannot be retried.
 func IsErrorPermanent(err error) bool {
-	return errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests)
+	return errors.Is(err, ErrOpenState) || errors.Is(err, ErrTooManyRequests)
 }
 
 // Initialize creates the underlying circuit breaker using the
@@ -84,7 +99,7 @@ func (c *CircuitBreaker) Initialize(log logger.Logger) {
 		}
 	}
 
-	c.breaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{ // nolint:exhaustivestruct
+	c.breaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{ //nolint:exhaustivestruct
 		Name:        c.Name,
 		MaxRequests: c.MaxRequests,
 		Interval:    c.Interval,
@@ -96,14 +111,52 @@ func (c *CircuitBreaker) Initialize(log logger.Logger) {
 	})
 }
 
-// Execute invokes `oper` if the circuit breaker is in an closed state
-// or for an allowed call in the half-open state.
-func (c *CircuitBreaker) Execute(oper func() error) error {
-	_, err := c.breaker.Execute(func() (interface{}, error) {
-		err := oper()
+// Execute invokes `oper` if the circuit breaker is in a closed state
+// or for an allowed call in the half-open state. It is a wrapper around the gobreaker
+// library that is used here.
+// The circuit breaker shorts if the connection is in open state or if there are too many
+// requests in the half-open state. In both cases, the error returned is wrapped with
+// ErrOpenState or ErrTooManyRequests defined in this package. The result of the operation
+// in those scenarios will by nil/zero.
+// In all other scenarios the result, error returned is the result, error returned by the
+// operation.
+func (c *CircuitBreaker) Execute(oper func() (any, error)) (any, error) {
+	res, err := c.breaker.Execute(oper)
 
-		return nil, err
-	})
+	// Wrap the error so we don't have to reference the external package in other places.
+	switch {
+	case errors.Is(err, gobreaker.ErrOpenState):
+		return res, ErrOpenState
+	case errors.Is(err, gobreaker.ErrTooManyRequests):
+		return res, ErrTooManyRequests
+	default:
+		// Handles the case where err is nil or something else other than
+		// the cases listed above.
+		return res, err //nolint:wrapcheck
+	}
+}
 
-	return err // nolint:wrapcheck
+// String implements fmt.Stringer and is used for debugging.
+func (c *CircuitBreaker) String() string {
+	return fmt.Sprintf(
+		"name='%s' namRequests='%d' interval='%v' timeout='%v' trip='%v'",
+		c.Name, c.MaxRequests, c.Interval, c.Timeout, c.Trip,
+	)
+}
+
+// State returns the current state of the circuit breaker.
+func (c *CircuitBreaker) State() CircuitBreakerState {
+	if c.breaker == nil {
+		return StateUnknown
+	}
+	switch c.breaker.State() {
+	case gobreaker.StateClosed:
+		return StateClosed
+	case gobreaker.StateOpen:
+		return StateOpen
+	case gobreaker.StateHalfOpen:
+		return StateHalfOpen
+	default:
+		return StateUnknown
+	}
 }

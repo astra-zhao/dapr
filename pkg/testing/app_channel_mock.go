@@ -18,6 +18,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/anypb"
 
+	"github.com/dapr/dapr/pkg/apphealth"
 	"github.com/dapr/dapr/pkg/config"
 	invokev1 "github.com/dapr/dapr/pkg/messaging/v1"
 )
@@ -27,19 +28,23 @@ type FailingAppChannel struct {
 	KeyFunc func(req *invokev1.InvokeMethodRequest) string
 }
 
-func (f *FailingAppChannel) GetBaseAddress() string {
-	return ""
-}
-
-func (f *FailingAppChannel) GetAppConfig() (*config.ApplicationConfig, error) {
+func (f *FailingAppChannel) GetAppConfig(_ context.Context, appID string) (*config.ApplicationConfig, error) {
 	return nil, nil
 }
 
-func (f *FailingAppChannel) InvokeMethod(ctx context.Context, req *invokev1.InvokeMethodRequest) (*invokev1.InvokeMethodResponse, error) {
+func (f *FailingAppChannel) InvokeMethod(ctx context.Context, req *invokev1.InvokeMethodRequest, appID string) (*invokev1.InvokeMethodResponse, error) {
 	err := f.Failure.PerformFailure(f.KeyFunc(req))
 	if err != nil {
 		return invokev1.NewInvokeMethodResponse(500, "Failure!", []*anypb.Any{}), err
 	}
 
 	return invokev1.NewInvokeMethodResponse(200, "Success", []*anypb.Any{}), nil
+}
+
+func (f *FailingAppChannel) HealthProbe(ctx context.Context) (bool, error) {
+	return true, nil
+}
+
+func (f *FailingAppChannel) SetAppHealth(ah *apphealth.AppHealth) {
+	// Do nothing
 }

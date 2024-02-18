@@ -43,6 +43,9 @@ const numHealthChecks = 60 // Number of times to call the endpoint to check for 
 var tr *runner.TestRunner
 
 func TestMain(m *testing.M) {
+	utils.SetupLogs("allowlists")
+	utils.InitHTTPClient(false)
+
 	// These apps will be deployed for hellodapr test before starting actual test
 	// and will be cleaned up after all tests are finished automatically
 	testApps := []kube.AppDescription{
@@ -95,7 +98,7 @@ func TestMain(m *testing.M) {
 		},
 	}
 
-	tr = runner.NewTestRunner("hellodapr", testApps, nil, nil)
+	tr = runner.NewTestRunner("allowlists", testApps, nil, nil)
 	os.Exit(tr.Start(m))
 }
 
@@ -122,7 +125,7 @@ var allowListsForServiceInvocationTests = []struct {
 		"opDeny",
 		"allowlists-callee-http",
 		"opDeny",
-		"fail to invoke, id: allowlists-callee-http, err: rpc error: code = PermissionDenied desc = access control policy has denied access to appid: allowlists-caller operation: opDeny verb: POST",
+		"failed to invoke, id: allowlists-callee-http, err: rpc error: code = PermissionDenied desc = access control policy has denied access to id: spiffe://public/ns/dapr-tests/allowlists-caller operation: opDeny verb: POST",
 		"http",
 		403,
 	},
@@ -149,7 +152,7 @@ var allowListsForServiceInvocationTests = []struct {
 		"httptogrpctest",
 		"allowlists-callee-grpc",
 		"httptogrpctest",
-		"HTTP call failed with fail to invoke, id: allowlists-callee-grpc, err: rpc error: code = PermissionDenied desc = access control policy has denied access to appid: allowlists-caller operation: httpToGrpcTest verb: NONE",
+		"HTTP call failed with failed to invoke, id: allowlists-callee-grpc, err: rpc error: code = PermissionDenied desc = access control policy has denied access to id: spiffe://public/ns/dapr-tests/allowlists-caller operation: httpToGrpcTest verb: NONE",
 		"grpc",
 		403,
 	},
@@ -214,7 +217,7 @@ func TestServiceInvocationWithAllowLists(t *testing.T) {
 		t.Logf("configuration name: daprsystem, get failed: %s \n", err.Error())
 		os.Exit(-1)
 	}
-	if !config.Spec.MTLSSpec.Enabled {
+	if !config.Spec.MTLSSpec.GetEnabled() {
 		t.Logf("mtls disabled. can't running unit tests")
 		return
 	}

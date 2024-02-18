@@ -14,6 +14,7 @@ limitations under the License.
 package kubernetes
 
 import (
+	"os"
 	"path/filepath"
 
 	"k8s.io/client-go/kubernetes"
@@ -65,7 +66,8 @@ func NewKubeClient(configPath string, clusterName string) (*KubeClient, error) {
 
 func clientConfig(kubeConfigPath string, clusterName string) (*rest.Config, error) {
 	if kubeConfigPath == "" {
-		if home := homedir.HomeDir(); home != "" {
+		kubeConfigPath = os.Getenv("KUBECONFIG")
+		if home := homedir.HomeDir(); home != "" && kubeConfigPath == "" {
 			kubeConfigPath = filepath.Join(home, ".kube", "config")
 		}
 	}
@@ -76,9 +78,17 @@ func clientConfig(kubeConfigPath string, clusterName string) (*rest.Config, erro
 		overrides.Context.Cluster = clusterName
 	}
 
-	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeConfigPath},
 		&overrides).ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	// Reduce the QPS to avoid rate-limiting
+	config.QPS = 3
+	config.Burst = 5
+	return config, nil
 }
 
 // GetClientConfig returns client configuration.

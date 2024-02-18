@@ -19,6 +19,7 @@ package actor_reminder_e2e
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"testing"
@@ -38,10 +39,9 @@ const (
 	actorIDPartitionTemplate     = "actor-reminder-partition-test-%d" // Template for Actor ID.
 	reminderName                 = "PartitionTestReminder"            // Reminder name.
 	numIterations                = 7                                  // Number of times each test should run.
-	numHealthChecks              = 60                                 // Number of get calls before starting tests.
 	numActors                    = 40                                 // Number of actors to register a reminder.
 	secondsToCheckReminderResult = 90                                 // How much time to wait to make sure the result is in logs.
-	secondsToWaitForAppRestart   = 10                                 // How much time to wait until app has restarted.
+	secondsToWaitForAppRestart   = 30                                 // How much time to wait until app has restarted.
 	reminderUpdateRateLimitRPS   = 20                                 // Sane rate limiting in persisting reminders.
 	actorName                    = "testactorreminderpartition"       // Actor type.
 	actorInvokeURLFormat         = "%s/test/%s/%s/%s/%s"              // URL to invoke a Dapr's actor method in test app.
@@ -80,7 +80,7 @@ func countActorAction(resp []byte, actorID string, action string) int {
 	count := 0
 	logEntries := parseLogEntries(resp)
 	for _, logEntry := range logEntries {
-		if (logEntry.ActorID == actorID) && (logEntry.Action == action) {
+		if logEntry.ActorID == actorID && logEntry.Action == action {
 			count++
 		}
 	}
@@ -91,25 +91,28 @@ func countActorAction(resp []byte, actorID string, action string) int {
 var tr *runner.TestRunner
 
 func TestMain(m *testing.M) {
+	utils.SetupLogs("actor_reminder_partition")
+	utils.InitHTTPClient(false)
+
 	// These apps will be deployed before starting actual test
 	// and will be cleaned up after all tests are finished automatically
 	testApps := []kube.AppDescription{
 		{
-			AppName:        appName,
-			DaprEnabled:    true,
-			ImageName:      "e2e-actorfeatures",
-			Replicas:       1,
-			IngressEnabled: true,
-			MetricsEnabled: true,
-			DaprCPULimit:   "2.0",
-			DaprCPURequest: "0.1",
-			AppCPULimit:    "2.0",
-			AppCPURequest:  "0.1",
+			AppName:             appName,
+			DaprEnabled:         true,
+			DebugLoggingEnabled: true,
+			ImageName:           "e2e-actorfeatures",
+			Replicas:            1,
+			IngressEnabled:      true,
+			Config:              "omithealthchecksconfig",
+			DaprCPULimit:        "2.0",
+			DaprCPURequest:      "0.1",
+			AppCPULimit:         "2.0",
+			AppCPURequest:       "0.1",
 			AppEnv: map[string]string{
 				"TEST_APP_ACTOR_REMINDERS_PARTITIONS": "0",
 				"TEST_APP_ACTOR_TYPE":                 actorName,
 			},
-			Config: "actortypemetadata",
 		},
 	}
 
@@ -129,7 +132,7 @@ func validateReminderLogs(t *testing.T, numActorsToCheck int) error {
 
 		logsURL = fmt.Sprintf(actorlogsURLFormat, externalURL)
 
-		t.Logf("Deleting logs via %s ...", logsURL)
+		log.Printf("Deleting logs via %s ...", logsURL)
 		_, err := utils.HTTPDelete(logsURL)
 		if err != nil {
 			return err
@@ -141,29 +144,35 @@ func validateReminderLogs(t *testing.T, numActorsToCheck int) error {
 		return rerr
 	}
 
-	return backoff.Retry(func() error {
-		t.Logf("Getting logs from %s to see if reminders did trigger for %d actors ...", logsURL, numActorsToCheck)
-		resp, errb := utils.HTTPGet(logsURL)
-		if errb != nil {
-			return errb
-		}
-
-		t.Log("Checking if all reminders did trigger ...")
-		// Errors below should NOT be considered flakyness and must be investigated.
-		// If there was no other error until now, there should be reminders triggered.
-		for i := 0; i < numActorsToCheck; i++ {
-			actorID := fmt.Sprintf(actorIDPartitionTemplate, i+1000)
-			count := countActorAction(resp, actorID, reminderName)
-			// Due to possible load stress, we do not expect all reminders to be called at the same frequency.
-			// There are other E2E tests that validate the correct frequency of reminders in a happy path.
-			if count == 0 {
-				t.Logf("Reminder %s for Actor %s was not invoked.", reminderName, actorID)
-				return fmt.Errorf("Reminder %s for Actor %s was not invoked.", reminderName, actorID)
+	return backoff.RetryNotify(
+		func() error {
+			log.Printf("Getting logs from %s to see if reminders did trigger for %d actors ...", logsURL, numActorsToCheck)
+			resp, errb := utils.HTTPGet(logsURL)
+			if errb != nil {
+				return errb
 			}
-		}
 
-		return nil
-	}, backoff.WithMaxRetries(backoff.NewConstantBackOff(5*time.Second), 10))
+			log.Print("Checking if all reminders did trigger ...")
+			// Errors below should NOT be considered flakiness and must be investigated.
+			// If there was no other error until now, there should be reminders triggered.
+			for i := 0; i < numActorsToCheck; i++ {
+				actorID := fmt.Sprintf(actorIDPartitionTemplate, i+1000)
+				count := countActorAction(resp, actorID, reminderName)
+				// Due to possible load stress, we do not expect all reminders to be called at the same frequency.
+				// There are other E2E tests that validate the correct frequency of reminders in a happy path.
+				if count == 0 {
+					log.Printf("Reminder %s for Actor %s was not invoked", reminderName, actorID)
+					return fmt.Errorf("reminder %s for Actor %s was not invoked", reminderName, actorID)
+				}
+			}
+
+			return nil
+		},
+		backoff.WithMaxRetries(backoff.NewConstantBackOff(5*time.Second), 10),
+		func(err error, d time.Duration) {
+			log.Printf("Error while getting logs: '%v' - retrying in %s", err, d)
+		},
+	)
 }
 
 func TestActorReminder(t *testing.T) {
@@ -173,9 +182,8 @@ func TestActorReminder(t *testing.T) {
 
 	// This initial probe makes the test wait a little bit longer when needed,
 	// making this test less flaky due to delays in the deployment.
-	t.Logf("Checking if app is healthy ...")
-	_, err := utils.HTTPGetNTimes(externalURL, numHealthChecks)
-	require.NoError(t, err)
+	log.Printf("Checking if app is healthy ...")
+	require.NoError(t, utils.HealthCheckApps(externalURL), "failed to check app's health status")
 
 	// Set reminder
 	reminder := actorReminder{
@@ -184,7 +192,7 @@ func TestActorReminder(t *testing.T) {
 		Period:  "1s",
 	}
 	reminderBody, err := json.Marshal(reminder)
-	require.NoError(t, err)
+	require.NoError(t, err, "error marshalling JSON")
 
 	t.Run("Actor reminder changes number of partitions.", func(t *testing.T) {
 		for i := 0; i < numActors; i++ {
@@ -198,8 +206,8 @@ func TestActorReminder(t *testing.T) {
 		expectedEnvPartitionCount := "0"
 		mustCheckLogs := true
 		for i := 0; i < numActors; i++ {
-			//externalURL = tr.Platform.AcquireAppExternalURL(appName)
-			//require.NotEmpty(t, externalURL, "external URL must not be empty!")
+			// externalURL = tr.Platform.AcquireAppExternalURL(appName)
+			// require.NotEmpty(t, externalURL, "external URL must not be empty!")
 
 			rateLimit.Take()
 			actorID := fmt.Sprintf(actorIDPartitionTemplate, i+1000)
@@ -219,79 +227,93 @@ func TestActorReminder(t *testing.T) {
 				_, err = utils.HTTPPost(
 					fmt.Sprintf(envURLFormat, externalURL, "TEST_APP_ACTOR_REMINDERS_PARTITIONS"),
 					[]byte(strconv.Itoa(newPartitionCount)))
-				require.NoError(t, err)
+				require.NoErrorf(t, err, "i=%d actorID=%s", i, actorID)
 
 				// Shutdown the sidecar to load the new partition config
 				_, err = utils.HTTPPost(fmt.Sprintf(shutdownSidecarURLFormat, externalURL), []byte(""))
 				err = tr.Platform.SetAppEnv(appName, "TEST_APP_ACTOR_REMINDERS_PARTITIONS", strconv.Itoa(newPartitionCount))
-				require.NoError(t, err)
+				require.NoErrorf(t, err, "i=%d actorID=%s", i, actorID)
 
-				t.Logf("Waiting for app %s to restart ...", appName)
+				log.Printf("Updated partition count to %d", newPartitionCount)
+				log.Printf("Waiting for app %s to restart ...", appName)
 
 				// Sleep for some time to let the sidecar restart.
 				// Calling the health-check right away might trigger a false-positive health prior to actual restart.
-				time.Sleep(secondsToWaitForAppRestart * 12 * time.Second)
+				time.Sleep(secondsToWaitForAppRestart * time.Second)
 
 				expectedEnvPartitionCount = strconv.Itoa(newPartitionCount)
 			}
 
-			err = backoff.Retry(func() error {
-				//externalURL = tr.Platform.AcquireAppExternalURL(appName)
-				//if externalURL == "" {
-				//	return fmt.Errorf("external URL must not be empty!")
-				//}
+			err = backoff.RetryNotify(
+				func() error {
+					//externalURL = tr.Platform.AcquireAppExternalURL(appName)
+					//if externalURL == "" {
+					//	return fmt.Errorf("external URL must not be empty!")
+					//}
 
-				_, rerr := utils.HTTPGetNTimes(externalURL, numHealthChecks)
-				if rerr != nil {
-					return rerr
-				}
+					rerr := utils.HealthCheckApps(externalURL)
+					if rerr != nil {
+						return rerr
+					}
 
-				envValue, rerr := utils.HTTPGet(fmt.Sprintf(envURLFormat, externalURL, "TEST_APP_ACTOR_REMINDERS_PARTITIONS"))
-				if rerr != nil {
-					return rerr
-				}
-				if expectedEnvPartitionCount != string(envValue) {
-					return fmt.Errorf("invalid number of partitions: %s (expected) vs %s (actual)", expectedEnvPartitionCount, string(envValue))
-				}
+					envValue, rerr := utils.HTTPGet(fmt.Sprintf(envURLFormat, externalURL, "TEST_APP_ACTOR_REMINDERS_PARTITIONS"))
+					if rerr != nil {
+						return rerr
+					}
+					if expectedEnvPartitionCount != string(envValue) {
+						return fmt.Errorf("invalid number of partitions: expected=%s - actual=%s", expectedEnvPartitionCount, string(envValue))
+					}
 
-				return nil
-			}, backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 10))
-			require.NoError(t, err)
+					return nil
+				},
+				backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 10),
+				func(err error, d time.Duration) {
+					log.Printf("Error while invoking actor: '%v' - retrying in %s", err, d)
+				},
+			)
+			require.NoErrorf(t, err, "i=%d actorID=%s", i, actorID)
 
-			err = backoff.Retry(func() error {
-				// Registering reminder
-				_, httpStatusCode, rerr := utils.HTTPPostWithStatus(
-					fmt.Sprintf(actorInvokeURLFormat, externalURL, actorName, actorID, "reminders", reminderName), reminderBody)
-				if rerr != nil {
-					return rerr
-				}
+			err = backoff.RetryNotify(
+				func() error {
+					// Registering reminder
+					_, httpStatusCode, rerr := utils.HTTPPostWithStatus(
+						fmt.Sprintf(actorInvokeURLFormat, externalURL, actorName, actorID, "reminders", reminderName),
+						reminderBody,
+					)
+					if rerr != nil {
+						return rerr
+					}
 
-				if (httpStatusCode != 200) && (httpStatusCode != 204) {
-					return fmt.Errorf("invalid status code %d while registering reminder for actorID %s", httpStatusCode, actorID)
-				}
-				return nil
-
-			}, backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 10))
-			require.NoError(t, err)
+					if httpStatusCode != 200 && httpStatusCode != 204 {
+						return fmt.Errorf("invalid status code %d while registering reminder for actorID %s", httpStatusCode, actorID)
+					}
+					return nil
+				},
+				backoff.WithMaxRetries(backoff.NewExponentialBackOff(), 10),
+				func(err error, d time.Duration) {
+					log.Printf("error while registering the reminder: '%v' - retrying in %s", err, d)
+				},
+			)
+			require.NoErrorf(t, err, "i=%d actorID=%s", i, actorID)
 
 			if mustCheckLogs {
 				err = validateReminderLogs(t, i+1)
-				require.NoError(t, err)
+				require.NoErrorf(t, err, "i=%d actorID=%s", i, actorID)
 				mustCheckLogs = false
 			}
 		}
 
 		err = validateReminderLogs(t, numActors)
-		require.NoError(t, err)
+		require.NoError(t, err, "failed to validate reminder logs")
 
 		for i := 0; i < numActors; i++ {
 			rateLimit.Take()
 			actorID := fmt.Sprintf(actorIDPartitionTemplate, i+1000)
 			// Unregistering reminder
 			_, err = utils.HTTPDelete(fmt.Sprintf(actorInvokeURLFormat, externalURL, actorName, actorID, "reminders", reminderName))
-			require.NoError(t, err)
+			require.NoError(t, err, "failed to un-register reminder")
 		}
 
-		t.Log("Done.")
+		log.Print("Done.")
 	})
 }

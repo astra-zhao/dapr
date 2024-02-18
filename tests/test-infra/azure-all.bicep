@@ -26,10 +26,40 @@ param location1 string
 @description('The location of the second set of resources')
 param location2 string
 
+@description('The location of the third set of resources')
+param location3 string
+
+@description('Optional value for the date tag for resource groups')
+param dateTag string = ''
+
+@description('If set, sends certain diagnostic logs to Log Analytics')
+param diagLogAnalyticsWorkspaceResourceId string = ''
+
+@description('If set, sends certain diagnostic logs to Azure Storage')
+param diagStorageResourceId string = ''
+
+@description('If set, sends certain Arm64 diagnostic logs to Log Analytics')
+param armDiagLogAnalyticsWorkspaceResourceId string = ''
+
+@description('If set, sends certain Arm64 diagnostic logs to Azure Storage')
+param armDiagStorageResourceId string = ''
+
+@description('If enabled, deploy an Arm64 cluster')
+param enableArm bool = true
+
+@description('If enabled, deploy Cosmos DB')
+param enableCosmosDB bool = true
+
+@description('If enabled, deploy Service Bus')
+param enableServiceBus bool = true
+
 // Deploy the Linux cluster in the first location
 resource linuxResources 'Microsoft.Resources/resourceGroups@2020-10-01' = {
   name: 'Dapr-E2E-${namePrefix}l'
   location: location1
+  tags: dateTag != '' ? {
+    date: dateTag
+  } : {}
 }
 module linuxCluster 'azure.bicep' = {
   name: 'linuxCluster'
@@ -38,6 +68,11 @@ module linuxCluster 'azure.bicep' = {
     namePrefix: '${namePrefix}l'
     location: location1
     enableWindows: false
+    enableArm : false
+    diagLogAnalyticsWorkspaceResourceId: diagLogAnalyticsWorkspaceResourceId
+    diagStorageResourceId: diagStorageResourceId
+    enableCosmosDB: enableCosmosDB
+    enableServiceBus: enableServiceBus
   }
 }
 
@@ -45,6 +80,9 @@ module linuxCluster 'azure.bicep' = {
 resource WindowsResources 'Microsoft.Resources/resourceGroups@2020-10-01' = {
   name: 'Dapr-E2E-${namePrefix}w'
   location: location2
+  tags: dateTag != '' ? {
+    date: dateTag
+  } : {}
 }
 module windowsCluster 'azure.bicep' = {
   name: 'windowsCluster'
@@ -53,5 +91,33 @@ module windowsCluster 'azure.bicep' = {
     namePrefix: '${namePrefix}w'
     location: location2
     enableWindows: true
+    enableArm : false
+    diagLogAnalyticsWorkspaceResourceId: diagLogAnalyticsWorkspaceResourceId
+    diagStorageResourceId: diagStorageResourceId
+    enableCosmosDB: enableCosmosDB
+    enableServiceBus: enableServiceBus
+  }
+}
+
+// Deploy the Arm cluster in the third location
+resource ArmResources 'Microsoft.Resources/resourceGroups@2020-10-01' = if (enableArm) {
+  name: 'Dapr-E2E-${namePrefix}la'
+  location: location3
+  tags: dateTag != '' ? {
+    date: dateTag
+  } : {}
+}
+module armCluster 'azure.bicep' = if (enableArm) {
+  name: 'armCluster'
+  scope: ArmResources
+  params: {
+    namePrefix: '${namePrefix}la'
+    location: location3
+    enableWindows: false
+    enableArm : true
+    diagLogAnalyticsWorkspaceResourceId: armDiagLogAnalyticsWorkspaceResourceId
+    diagStorageResourceId: armDiagStorageResourceId
+    enableCosmosDB: enableCosmosDB
+    enableServiceBus: enableServiceBus
   }
 }

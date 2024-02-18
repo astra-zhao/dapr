@@ -51,8 +51,8 @@ const (
 )
 
 func TestMain(m *testing.M) {
-	// This test shows how to deploy the multiple test apps, validate the side-car injection
-	// and validate the response by using test app's service endpoint
+	utils.SetupLogs("job")
+	utils.InitHTTPClient(true)
 
 	// These apps will be deployed for hellodapr test before starting actual test
 	// and will be cleaned up after all tests are finished automatically

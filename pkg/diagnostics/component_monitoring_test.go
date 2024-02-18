@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"go.opencensus.io/stats/view"
-	"go.opencensus.io/tag"
 )
 
 const (
@@ -19,29 +18,6 @@ func componentsMetrics() *componentMetrics {
 	c.Init("test", "default")
 
 	return c
-}
-
-func allTagsPresent(t *testing.T, v *view.View, tags []tag.Tag) {
-	for _, k := range v.TagKeys {
-		found := false
-
-		if k.Name() == "" {
-			continue
-		}
-
-		for _, tag := range tags {
-			if tag.Key.Name() == "" {
-				continue
-			}
-
-			if k.Name() == tag.Key.Name() {
-				found = true
-				break
-			}
-		}
-
-		assert.True(t, found)
-	}
 }
 
 func TestPubSub(t *testing.T) {
@@ -66,7 +42,7 @@ func TestPubSub(t *testing.T) {
 
 		allTagsPresent(t, v, viewData[0].Tags)
 
-		assert.Equal(t, float64(1), viewData[0].Data.(*view.DistributionData).Min)
+		assert.InEpsilon(t, 1, viewData[0].Data.(*view.DistributionData).Min, 0)
 	})
 
 	t.Run("record egress latency", func(t *testing.T) {
@@ -79,7 +55,7 @@ func TestPubSub(t *testing.T) {
 
 		allTagsPresent(t, v, viewData[0].Tags)
 
-		assert.Equal(t, float64(1), viewData[0].Data.(*view.DistributionData).Min)
+		assert.InEpsilon(t, 1, viewData[0].Data.(*view.DistributionData).Min, 0)
 	})
 }
 
@@ -105,7 +81,7 @@ func TestBindings(t *testing.T) {
 
 		allTagsPresent(t, v, viewData[0].Tags)
 
-		assert.Equal(t, float64(1), viewData[0].Data.(*view.DistributionData).Min)
+		assert.InEpsilon(t, 1, viewData[0].Data.(*view.DistributionData).Min, 0)
 	})
 
 	t.Run("record output binding count", func(t *testing.T) {
@@ -129,7 +105,7 @@ func TestBindings(t *testing.T) {
 
 		allTagsPresent(t, v, viewData[0].Tags)
 
-		assert.Equal(t, float64(1), viewData[0].Data.(*view.DistributionData).Min)
+		assert.InEpsilon(t, 1, viewData[0].Data.(*view.DistributionData).Min, 0)
 	})
 }
 
@@ -154,7 +130,7 @@ func TestState(t *testing.T) {
 		v := view.Find("component/state/latencies")
 
 		allTagsPresent(t, v, viewData[0].Tags)
-		assert.Equal(t, float64(1), viewData[0].Data.(*view.DistributionData).Min)
+		assert.InEpsilon(t, 1, viewData[0].Data.(*view.DistributionData).Min, 0)
 	})
 }
 
@@ -180,7 +156,7 @@ func TestConfiguration(t *testing.T) {
 
 		allTagsPresent(t, v, viewData[0].Tags)
 
-		assert.Equal(t, float64(1), viewData[0].Data.(*view.DistributionData).Min)
+		assert.InEpsilon(t, 1, viewData[0].Data.(*view.DistributionData).Min, 0)
 	})
 }
 
@@ -206,15 +182,15 @@ func TestSecrets(t *testing.T) {
 
 		allTagsPresent(t, v, viewData[0].Tags)
 
-		assert.Equal(t, float64(1), viewData[0].Data.(*view.DistributionData).Min)
+		assert.InEpsilon(t, 1, viewData[0].Data.(*view.DistributionData).Min, 0)
 	})
 }
 
-func TestInit(t *testing.T) {
+func TestComponentMetricsInit(t *testing.T) {
 	c := componentsMetrics()
 	assert.True(t, c.enabled)
-	assert.Equal(t, c.appID, "test")
-	assert.Equal(t, c.namespace, "default")
+	assert.Equal(t, "test", c.appID)
+	assert.Equal(t, "default", c.namespace)
 }
 
 func TestElapsedSince(t *testing.T) {
@@ -222,5 +198,5 @@ func TestElapsedSince(t *testing.T) {
 	time.Sleep(time.Second)
 
 	elapsed := ElapsedSince(start)
-	assert.True(t, elapsed >= 1000)
+	assert.GreaterOrEqual(t, elapsed, float64(1000))
 }

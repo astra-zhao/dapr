@@ -14,11 +14,14 @@ limitations under the License.
 package runner
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 )
 
 // MockDisposable is the mock of Disposable interface.
@@ -31,7 +34,7 @@ func (m *MockDisposable) Name() string {
 	return args.String(0)
 }
 
-func (m *MockDisposable) Init() error {
+func (m *MockDisposable) Init(ctx context.Context) error {
 	args := m.Called()
 	return args.Error(0)
 }
@@ -57,46 +60,62 @@ func TestAdd(t *testing.T) {
 
 func TestSetup(t *testing.T) {
 	t.Run("active all resources", func(t *testing.T) {
+		expect := []string{}
 		resource := new(TestResources)
 		for i := 0; i < 3; i++ {
+			name := fmt.Sprintf("resource - %d", i)
 			r := new(MockDisposable)
-			r.On("Name").Return(fmt.Sprintf("resource - %d", i))
+			r.On("Name").Return(name)
 			r.On("Init").Return(nil)
 			resource.Add(r)
+			expect = append(expect, name)
 		}
 
 		err := resource.setup()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
+		found := []string{}
 		for i := 2; i >= 0; i-- {
 			r := resource.popActiveResource()
-			assert.Equal(t, fmt.Sprintf("resource - %d", i), r.Name())
+			found = append(found, r.Name())
 		}
+
+		slices.Sort(expect)
+		slices.Sort(found)
+		assert.Equal(t, expect, found)
 	})
 
 	t.Run("fails to setup resources and stops the process", func(t *testing.T) {
+		expect := []string{}
 		resource := new(TestResources)
 		for i := 0; i < 3; i++ {
+			name := fmt.Sprintf("resource - %d", i)
 			r := new(MockDisposable)
-			r.On("Name").Return(fmt.Sprintf("resource - %d", i))
+			r.On("Name").Return(name)
 			if i != 1 {
 				r.On("Init").Return(nil)
 			} else {
-				r.On("Init").Return(fmt.Errorf("setup error"))
+				r.On("Init").Return(fmt.Errorf("setup error %d", i))
 			}
+			expect = append(expect, name)
 			resource.Add(r)
 		}
 
 		err := resource.setup()
-		assert.Error(t, err)
+		require.Error(t, err)
 
-		for i := 1; i >= 0; i-- {
+		found := []string{}
+		for i := 2; i >= 0; i-- {
 			r := resource.popActiveResource()
-			assert.Equal(t, fmt.Sprintf("resource - %d", i), r.Name())
+			found = append(found, r.Name())
 		}
 
 		r := resource.popActiveResource()
 		assert.Nil(t, r)
+
+		slices.Sort(expect)
+		slices.Sort(found)
+		assert.Equal(t, expect, found)
 	})
 }
 
@@ -114,11 +133,11 @@ func TestTearDown(t *testing.T) {
 
 		// setup resources
 		err := resource.setup()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		// tear down all resources
 		err = resource.tearDown()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		r := resource.popActiveResource()
 		assert.Nil(t, r)
@@ -141,11 +160,11 @@ func TestTearDown(t *testing.T) {
 
 		// setup resources
 		err := resource.setup()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		// tear down all resources
 		err = resource.tearDown()
-		assert.Error(t, err)
+		require.Error(t, err)
 
 		r := resource.popActiveResource()
 		assert.Nil(t, r)

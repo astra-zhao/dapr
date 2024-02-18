@@ -14,11 +14,15 @@ limitations under the License.
 package pubsub
 
 import (
-	contrib_pubsub "github.com/dapr/components-contrib/pubsub"
+	"context"
+
+	contribPubsub "github.com/dapr/components-contrib/pubsub"
+	"github.com/dapr/dapr/pkg/outbox"
 )
 
 // Adapter is the interface for message buses.
 type Adapter interface {
-	GetPubSub(pubsubName string) contrib_pubsub.PubSub
-	Publish(req *contrib_pubsub.PublishRequest) error
+	Publish(context.Context, *contribPubsub.PublishRequest) error
+	BulkPublish(context.Context, *contribPubsub.BulkPublishRequest) (contribPubsub.BulkPublishResponse, error)
+	Outbox() outbox.Outbox
 }

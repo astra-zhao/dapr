@@ -22,15 +22,15 @@ const (
 	defaultMetricsEnabled = true
 )
 
-// Options defines the sets of options for Dapr logging.
+// Options defines the sets of options for exporting metrics.
 type Options struct {
-	// OutputLevel is the level of logging
+	// MetricsEnabled indicates whether a metrics server should be started.
 	MetricsEnabled bool
-
+	// Port to start metrics server on.
 	Port string
 }
 
-func defaultMetricOptions() *Options {
+func DefaultMetricOptions() *Options {
 	return &Options{
 		Port:           defaultMetricsPort,
 		MetricsEnabled: defaultMetricsEnabled,
@@ -51,7 +51,8 @@ func (o *Options) MetricsPort() uint64 {
 // AttachCmdFlags attaches metrics options to command flags.
 func (o *Options) AttachCmdFlags(
 	stringVar func(p *string, name string, value string, usage string),
-	boolVar func(p *bool, name string, value bool, usage string)) {
+	boolVar func(p *bool, name string, value bool, usage string),
+) {
 	stringVar(
 		&o.Port,
 		"metrics-port",
@@ -66,7 +67,8 @@ func (o *Options) AttachCmdFlags(
 
 // AttachCmdFlag attaches single metrics option to command flags.
 func (o *Options) AttachCmdFlag(
-	stringVar func(p *string, name string, value string, usage string)) {
+	stringVar func(p *string, name string, value string, usage string),
+) {
 	stringVar(
 		&o.Port,
 		"metrics-port",

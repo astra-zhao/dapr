@@ -22,14 +22,14 @@ import (
 	"net"
 	"time"
 
-	"github.com/golang/protobuf/ptypes/empty"
-
 	commonv1pb "github.com/dapr/dapr/pkg/proto/common/v1"
 	runtimev1pb "github.com/dapr/dapr/pkg/proto/runtime/v1"
 
 	"google.golang.org/grpc"
+	grpccodes "google.golang.org/grpc/codes"
 	pb "google.golang.org/grpc/examples/helloworld/helloworld"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 const (
@@ -51,6 +51,7 @@ type FailureMessage struct {
 	ID              string         `json:"id"`
 	MaxFailureCount *int           `json:"maxFailureCount,omitempty"`
 	Timeout         *time.Duration `json:"timeout,omitempty"`
+	ResponseCode    *int           `json:"responseCode,omitempty"`
 }
 
 // SayHello implements helloworld.GreeterServer
@@ -87,14 +88,14 @@ func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloRe
 
 // gRPC server definitions.
 func (s *server) OnInvoke(ctx context.Context, in *commonv1pb.InvokeRequest) (*commonv1pb.InvokeResponse, error) {
-	log.Printf("Got invoked method %s and data: %s\n", in.Method, string(in.GetData().Value))
+	log.Printf("Got invoked method %s and data: %s", in.Method, string(in.GetData().Value))
 
 	resp := &commonv1pb.InvokeResponse{}
 
 	if in.Method == "GetCallCount" {
 		log.Println("Getting call counts")
 		for key, val := range s.callTracking {
-			log.Printf("\t%s - Called %d times.\n", key, len(val))
+			log.Printf("\t%s - Called %d times.", key, len(val))
 		}
 		b, err := json.Marshal(s.callTracking)
 
@@ -121,6 +122,10 @@ func (s *server) OnInvoke(ctx context.Context, in *commonv1pb.InvokeRequest) (*c
 
 		s.callTracking[message.ID] = append(s.callTracking[message.ID], CallRecord{Count: callCount, TimeSeen: time.Now()})
 
+		if message.ResponseCode != nil {
+			return nil, grpc.Errorf(grpccodes.Code(*message.ResponseCode), "forced failure with status code %d", *message.ResponseCode)
+		}
+
 		if message.MaxFailureCount != nil && callCount < *message.MaxFailureCount {
 			if message.Timeout != nil {
 				// This request can still succeed if the resiliency policy timeout is longer than this sleep.
@@ -138,7 +143,7 @@ func (s *server) OnInvoke(ctx context.Context, in *commonv1pb.InvokeRequest) (*c
 }
 
 // Dapr will call this method to get the list of topics the app wants to subscribe to.
-func (s *server) ListTopicSubscriptions(ctx context.Context, in *empty.Empty) (*runtimev1pb.ListTopicSubscriptionsResponse, error) {
+func (s *server) ListTopicSubscriptions(ctx context.Context, in *emptypb.Empty) (*runtimev1pb.ListTopicSubscriptionsResponse, error) {
 	log.Println("List Topic Subscription called")
 	return &runtimev1pb.ListTopicSubscriptionsResponse{
 		Subscriptions: []*runtimev1pb.TopicSubscription{
@@ -185,7 +190,7 @@ func (s *server) OnTopicEvent(ctx context.Context, in *runtimev1pb.TopicEventReq
 	}, nil
 }
 
-func (s *server) ListInputBindings(ctx context.Context, in *empty.Empty) (*runtimev1pb.ListInputBindingsResponse, error) {
+func (s *server) ListInputBindings(ctx context.Context, in *emptypb.Empty) (*runtimev1pb.ListInputBindingsResponse, error) {
 	log.Println("List Input Bindings called")
 	return &runtimev1pb.ListInputBindingsResponse{
 		Bindings: []string{

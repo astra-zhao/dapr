@@ -17,6 +17,9 @@ param namePrefix string
 @description('The location of the resources')
 param location string = resourceGroup().location
 
+@description('If enabled, add a ARM64 pool')
+param enableArm bool = false
+
 @description('If enabled, add a Windows pool')
 param enableWindows bool = false
 
@@ -26,12 +29,21 @@ param linuxVMSize string = 'Standard_DS2_v2'
 @description('VM size to use for Windows nodes, if enabled')
 param windowsVMSize string = 'Standard_DS3_v2'
 
+@description('VM size to use for ARM64 nodes if enabled')
+param armVMSize string = 'Standard_D2ps_v5'
+
+@description('If set, sends certain diagnostic logs to Log Analytics')
+param diagLogAnalyticsWorkspaceResourceId string = ''
+
+@description('If set, sends certain diagnostic logs to Azure Storage')
+param diagStorageResourceId string = ''
+
 // Disk size (in GB) for each of the agent pool nodes
 // 0 applies the default
 var osDiskSizeGB = 0
 
 // Version of Kubernetes
-var kubernetesVersion = '1.22.6'
+var kubernetesVersion = '1.27'
 
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2019-05-01' = {
   name: '${namePrefix}acr'
@@ -52,7 +64,7 @@ resource roleAssignContainerRegistry 'Microsoft.Authorization/roleAssignments@20
     principalId: reference('${namePrefix}-aks', '2021-07-01').identityProfile.kubeletidentity.objectId
   }
   scope: containerRegistry
-  dependsOn:[
+  dependsOn: [
     aks
   ]
 }
@@ -70,7 +82,7 @@ var networkProfileLinux = {
   networkPlugin: 'kubenet'
 }
 
-resource aks 'Microsoft.ContainerService/managedClusters@2021-07-01' = {
+resource aks 'Microsoft.ContainerService/managedClusters@2023-05-01' = {
   location: location
   name: '${namePrefix}-aks'
   properties: {
@@ -106,6 +118,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2021-07-01' = {
           count: 2
           vmSize: windowsVMSize
           osType: 'Windows'
+          osSKU: 'Windows2022'
           type: 'VirtualMachineScaleSets'
           mode: 'User'
           maxPods: 110
@@ -118,6 +131,28 @@ resource aks 'Microsoft.ContainerService/managedClusters@2021-07-01' = {
           nodeTaints: []
           enableNodePublicIP: false
           vnetSubnetID: aksVNet::defaultSubnet.id
+          tags: {}
+        }
+      ] : [], enableArm ? [
+        {
+          name: 'armpol'
+          osDiskSizeGB: osDiskSizeGB
+          enableAutoScaling: false
+          count: 2
+          vmSize: armVMSize
+          osType: 'Linux'
+          type: 'VirtualMachineScaleSets'
+          mode: 'User'
+          maxPods: 110
+          availabilityZones: [
+            '1'
+            '2'
+            '3'
+          ]
+          nodeLabels: {}
+          nodeTaints: []
+          enableNodePublicIP: false
+          vnetSubnetID: enableWindows ? aksVNet::defaultSubnet.id : null
           tags: {}
         }
       ] : [])
@@ -137,12 +172,20 @@ resource aks 'Microsoft.ContainerService/managedClusters@2021-07-01' = {
       azureKeyvaultSecretsProvider: {
         enabled: false
       }
+      omsagent: diagLogAnalyticsWorkspaceResourceId == '' ? {
+        enabled: false
+      } : {
+        enabled: true
+        config: {
+          logAnalyticsWorkspaceResourceID: diagLogAnalyticsWorkspaceResourceId
+        }
+      }
     }
   }
   tags: {}
   sku: {
-    name: 'Basic'
-    tier: 'Free'
+    name: 'Base'
+    tier: 'Standard'
   }
   identity: {
     type: 'SystemAssigned'
@@ -181,6 +224,42 @@ resource roleAssignVNet 'Microsoft.Authorization/roleAssignments@2020-04-01-prev
     principalId: aks.identity.principalId
   }
   scope: aksVNet::defaultSubnet
+}
+
+resource aksDiagnosticLogAnalytics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (diagLogAnalyticsWorkspaceResourceId != '') {
+  name: 'loganalytics'
+  scope: aks
+  properties: {
+    logs: [
+      {
+        category: 'kube-apiserver'
+        enabled: true
+      }
+      {
+        category: 'kube-controller-manager'
+        enabled: true
+      }
+    ]
+    workspaceId: diagLogAnalyticsWorkspaceResourceId
+  }
+}
+
+resource aksDiagnosticStorage 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (diagStorageResourceId != '') {
+  name: 'storage'
+  scope: aks
+  properties: {
+    logs: [
+      {
+        category: 'kube-apiserver'
+        enabled: true
+      }
+      {
+        category: 'kube-audit'
+        enabled: true
+      }
+    ]
+    storageAccountId: diagStorageResourceId
+  }
 }
 
 output controlPlaneFQDN string = aks.properties.fqdn
